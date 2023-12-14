@@ -1,54 +1,53 @@
-FROM quay.io/pangeo/pytorch-notebook:latest
+ARG RELEASE_VERSION=23.11
+FROM nvcr.io/nvidia/pytorch:${RELEASE_VERSION}-py3
 
-USER root
-COPY --chown=jovyan:jovyan . /home/jovyan
+ARG CAUSTICS_BRANCH=main
 
-# Install apt packages specified in a apt.txt file if it exists.
-# Unlike repo2docker, blank lines nor comments are supported here.
-RUN echo "Checking for 'apt.txt'..." \
-    ; if test -f "apt.txt" ; then \
-    apt-get update --fix-missing > /dev/null \
-    # Read apt.txt line by line, and execute apt-get install -y for each line in apt.txt
-    && xargs -a apt.txt apt-get install -y \
+# Setup environment to match variables set by repo2docker as much as possible
+# Tell apt-get to not block installs by asking for interactive human input
+ENV DEBIAN_FRONTEND=noninteractive \
+    # Set username, uid and gid (same as uid) of non-root user the container will be run as
+    NB_USER=jovyan \
+    NB_UID=1000 \
+    # Use /bin/bash as shell, not the default /bin/sh (arrow keys, etc don't work then)
+    SHELL=/bin/bash \
+    # Setup locale to be UTF-8, avoiding gnarly hard to debug encoding errors
+    LANG=C.UTF-8  \
+    LC_ALL=C.UTF-8
+
+# All env vars that reference other env vars need to be in their own ENV block
+# Path to the python environment where the jupyter notebook packages are installed
+# Home directory of our non-root user
+ENV HOME=/home/${NB_USER}
+
+
+RUN echo "Creating ${NB_USER} user..." \
+    # Create a group for the user to be part of, with gid same as uid
+    && groupadd --gid ${NB_UID} ${NB_USER}  \
+    # Create non-root user, with given gid, uid and create $HOME
+    && useradd --create-home --gid ${NB_UID} --no-log-init --uid ${NB_UID} ${NB_USER} \
+    # Make sure that /home/${NB_USER} is owned by non-root user, so we can install things there
+    && chown -R ${NB_USER}:${NB_USER} ${HOME} \
+    && chown -R ${NB_USER}:${NB_USER} /workspace
+
+# Install basic apt packages
+RUN echo "Installing Apt-get packages..." \
+    && apt-get update --fix-missing > /dev/null \
+    && apt-get install -y apt-utils \
+    git \
+    wget \
+    zip \
+    tzdata \
+    python3-venv \
+    graphviz \
+    > /dev/null \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    ; fi
+    && rm -rf /var/lib/apt/lists/*
 
-# If a conda-requirements.txt file exists, use conda to install packages listed there.
-# After installing the packages, we cleanup some unnecessary files
-# to try reduce image size - see https://jcristharif.com/conda-docker-tips.html
-RUN echo "Checking for conda 'conda-requirements.txt'..." \
-    ; if test -f "conda-requirements.txt" ; then \
-    mamba install --yes --name ${CONDA_ENV} --file conda-requirements.txt \
-    ; fi \
-    && mamba clean -yaf \
-    && find ${CONDA_DIR} -follow -type f -name '*.a' -delete \
-    && find ${CONDA_DIR} -follow -type f -name '*.js.map' -delete \
-    ; if [ -d ${NB_PYTHON_PREFIX}/lib/python*/site-packages/bokeh/server/static ]; then \
-    find ${NB_PYTHON_PREFIX}/lib/python*/site-packages/bokeh/server/static -follow -type f -name '*.js' ! -name '*.min.js' -delete \
-    ; fi
+# Add TZ configuration - https://github.com/PrefectHQ/prefect/issues/3061
+ENV TZ UTC
+# ========================
 
-# If a pip-requirements.txt file exists, use pip to install packages
-# listed there. We don't want to save cached wheels in the image
-# to avoid wasting space.
-RUN echo "Checking for pip 'pip-requirements.txt'..." \
-    ; if test -f "pip-requirements.txt" ; then \
-    ${NB_PYTHON_PREFIX}/bin/pip install --no-cache -r pip-requirements.txt \
-    ; fi
-
-# If a start file exists, put that under /srv/start. Used in the
-# same way as a start file in repo2docker.
-RUN echo "Checking for 'start'..." \
-    ; if test -f "start" ; then \
-    chmod +x start \
-    && cp start /srv/start \
-    ; fi
-
-# Set jovyan as the owner of everything under ${HOME}
-RUN chown -R jovyan:jovyan ${HOME}
-
+# Set to non-root user and user's home dir for working directory
 USER ${NB_USER}
 WORKDIR ${HOME}
-
-EXPOSE 8888
-ENTRYPOINT ["/srv/start"]
